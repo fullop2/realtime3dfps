@@ -1,0 +1,185 @@
+import {ObjectController,Builder,Input,Resource,AnimationManager}  from "./ObjectController.js";
+import {ShooterController} from "./ShooterController.js";
+import {NetworkManager} from "../Manager/Manager.js";
+
+export class PlayerController extends ObjectController{
+  constructor(object, animation){
+    super(object);
+    this._animation = new AnimationManager(object,animation);
+    this._inputDelay = 0.2;
+    this._inputTime = 0;
+
+    let geometry = new THREE.SphereGeometry( 0.1, 16, 16 );
+    let material = new THREE.MeshBasicMaterial( {color: 0xffff00} );
+    this._ball = new THREE.Mesh( geometry, material );
+    this._mid = new THREE.Vector2(0,0);
+
+    this._attackDelay = 0;
+    this._attackState = -1;
+    this._attackLock = [0.8,0.52,1.5];
+    this._attackPos = [0.1,2,3];
+    this._attackVec = [0,0];
+
+    NetworkManager.socket.on("addbullet",(position,vector)=>{
+      let ball = this._ball.clone();
+      Builder.scene.add(ball);
+      let ballController = new ShooterController(ball,position,vector,10);
+      Builder.scene.addController(ballController);
+
+    });
+   }
+  get animation(){
+    return this._animation;
+  }
+  shot(deltaTime){
+    if((this._inputTime -= deltaTime) <= 0 && Input.mouseDown){
+      Builder.raycaster.setFromCamera(this._mid,Builder.scene.camera);
+      let intersects = Builder.raycaster.intersectObjects( Builder.scene.children,true);
+      if(intersects.length){
+        let intersectPosition = intersects[0].point.clone();
+        let characterPosition = this.object.position.clone();
+        characterPosition.y += 0.1;
+
+        intersectPosition.sub(characterPosition).normalize(); // changed to vector
+        characterPosition.x += intersectPosition.x;
+        characterPosition.z += intersectPosition.z;
+
+        NetworkManager.addbullet(characterPosition,intersectPosition);
+        this._inputTime = this._inputDelay;
+      }
+      else{
+
+      }
+    }
+  }
+  calcDirection(zd,xd){
+    let length = Math.sqrt(zd*zd + xd*xd);
+    zd = zd /= length;
+    xd = xd /= length;
+    return [zd,xd];
+  }
+
+  update(deltaTime){
+    this.shot(deltaTime);
+    // update character position rotation
+    let speed = 3;
+    let run = 1;
+    if(Input.keyDown('16')){
+      run = 2;
+    }
+    let target = new THREE.Vector3();
+    Builder.scene.camera.getWorldDirection(target);
+
+    const front = target.z;
+    const right = target.x;
+
+    let powLength = target.x*target.x + target.z*target.z;
+    let xp = Math.sqrt(target.x*target.x / powLength);
+    let zp = Math.sqrt(target.z*target.z / powLength);
+
+    xp = -(target.x >= 0 ? xp : -xp);
+    zp = -(target.z >= 0 ? zp : -zp);
+
+    let dir = [0,0];
+
+
+    if(this._attackState >= 0){
+        if(this._attackLock[this._attackState] > (this._attackDelay+=deltaTime)){ // 현재 공격 중인 경우
+          this.animation.setState("Attack");
+        }
+        else{
+          this._attackDelay = 0;
+          if(Input.mouseDown){ // 현재 공격이 끝났을 때, 계속 공격을 누르고 있는 경우,
+            this._attackState = (this._attackState + 1) % this._attackLock.length;
+            let d = new THREE.Vector2(front,right);
+            d.normalize();
+            this._attackVec[0] = d.x;
+            this._attackVec[1] = d.y;
+            this.object.rotation.y = (Math.atan2(xp,zp) - Math.PI);
+          }
+          else{ // 공격이 끝나고 누르고 있지 않은 경우
+            this._attackState = -1;
+            this.animation.setState("Idle");
+          }
+        }
+        this.object.position.z += this._attackVec[0] * deltaTime * 0.01;
+        this.object.position.x += this._attackVec[1] * deltaTime  * 0.01;
+    }
+    else if(Input.mouseDown){
+          this._attackState = 0;
+          let d = new THREE.Vector2(front,right);
+          d.normalize();
+          this._attackVec[0] = d.x;
+          this._attackVec[1] = d.y;
+          this.object.rotation.y = (Math.atan2(xp,zp) - Math.PI);
+    }
+    else{
+      if(Input.keyDown('87') && Input.keyDown('65')){
+        dir = this.calcDirection(front - right,right + front);
+        this.object.rotation.y = (Math.atan2(xp,zp) - Math.PI*3/4);
+      }
+      else if(Input.keyDown('87') && Input.keyDown('68')){
+        dir = this.calcDirection(front + right,right - front);
+        this.object.rotation.y = (Math.atan2(xp,zp) + Math.PI*3/4);
+      }
+      else if(Input.keyDown('83') && Input.keyDown('65')){
+        dir = this.calcDirection(-front - right,-right + front);
+        this.object.rotation.y = (Math.atan2(xp,zp) - Math.PI/4);
+      }
+      else if(Input.keyDown('83') && Input.keyDown('68')){
+        dir = this.calcDirection(-front + right,-right - front);
+        this.object.rotation.y = (Math.atan2(xp,zp) + Math.PI/4);
+      }
+      else if(Input.keyDown('87')){
+        dir = [front,right];
+        this.object.rotation.y = (Math.atan2(xp,zp) - Math.PI);
+      }
+      else if(Input.keyDown('83')){
+        dir = [-front,-right];
+        this.object.rotation.y = (Math.atan2(xp,zp));
+      }
+      else if(Input.keyDown('65')){
+        dir = [-right,front];
+        this.object.rotation.y = (Math.atan2(xp,zp) - Math.PI/2);
+      }
+      else if(Input.keyDown('68')){
+        dir = [right,-front];
+        this.object.rotation.y = (Math.atan2(xp,zp) + Math.PI/2);
+      }
+
+      let d = new THREE.Vector2(dir[0],dir[1]);
+      d.normalize();
+      this.object.position.z += d.x * run * deltaTime * speed;
+      this.object.position.x += d.y * run * deltaTime * speed;
+
+      if(Input.keyDown('32')){
+          this.animation.setState("Jump");
+      }
+      else if(!Input.keyDown('68') && !Input.keyDown('65') && !Input.keyDown('83') && !Input.keyDown('87') && !Input.mouseDown ){
+        this.animation.setState("Idle");
+      }
+      else if(Input.keyDown('16') && Input.keyDown('87')){
+          this.animation.setState("Run");
+      }
+      else if(Input.keyDown('65')){
+          this.animation.setState("Walk");
+      }
+      else if(Input.keyDown('68')){
+          this.animation.setState("Walk");
+      }
+      else {
+          this.animation.setState("Walk");
+      }
+    }
+
+    Builder.scene.camera.position.z = this.object.position.z - target.z*0.5;
+    Builder.scene.camera.position.x = this.object.position.x - target.x*0.5;
+
+    // animation state
+    this.animation.update(deltaTime);
+
+    let vectoarr = [this.object.position.x, this.object.position.y, this.object.position.z];
+    NetworkManager.playerUpdate(vectoarr, this.object.rotation.y, this.animation.state);
+    return true;
+  }
+}
